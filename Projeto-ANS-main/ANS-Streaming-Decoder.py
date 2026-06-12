@@ -1,4 +1,5 @@
 import numpy as np
+import os
 
 def D_rANS(state, symbol_counts):
     total_counts = np.sum(symbol_counts)  # Representa M
@@ -38,16 +39,34 @@ def Streaming_rANS_decoder(final_state, bitstream, symbol_counts, num_symbols):
     return decoded_symbols, states, initial_state
 
 
-# Parâmetros do exemplo
-symbol_counts = [3, 3, 2]
-final_state = 14
-bitstream = "0100000111000111"
-num_symbols = 9
+# Carregar bitstream e metadados
+if os.path.exists('input_encoded.bin'):
+    with open('input_encoded.bin', 'r') as f:
+        lines = f.readlines()
+        final_state = int(lines[0].strip())
+        bitstream = lines[1].strip()
+        num_symbols = int(lines[2].strip())
+        symbol_counts = [int(x) for x in lines[3].strip().split(',')]
+else:
+    # Fallback
+    symbol_counts = [3, 3, 2]
+    final_state = 14
+    bitstream = "0100000111000111"
+    num_symbols = 9
 
 decoded_symbols, states, Final_state = Streaming_rANS_decoder(final_state, bitstream, symbol_counts, num_symbols)
+
+# Decodificando na ordem inversa (ANS decodifica do fim para o começo)
+decoded_symbols = decoded_symbols[::-1]
 
 print(f"{'Decoded Symbol':<15}{'State':<10}")
 for symbol, state in zip(decoded_symbols, states):
     print(f"{symbol:<15}{state:<10}")
 
 print(f"\nFinal State: {Final_state}")
+
+# Salvar resultado em output.txt
+with open('output.txt', 'w') as f:
+    f.write(' '.join(map(str, decoded_symbols)))
+
+print("\nArquivo decodificado e salvo em output.txt")
