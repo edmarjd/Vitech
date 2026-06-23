@@ -3,7 +3,7 @@ import time
 import os
 
 # Configuração global do tamanho do bloco
-BLOCK_SIZE = 16
+BLOCK_SIZE = 64
 
 def C_rANS(s, state, symbol_counts):
     total_counts = np.sum(symbol_counts)  # Representa M
