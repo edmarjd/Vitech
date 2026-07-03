@@ -273,7 +273,7 @@ void ans_encode_symbol(AnsContext *context, int symbol, BitstreamWriter *stream 
  SAVE BINÁRIO
  */
 
-void bitstream_save_binary( BitstreamWriter *stream, const char *filename) {
+void bitstream_save_binary( BitstreamWriter *stream, const char *filename, uint32_t symbol_count) {
 
     FILE *f = fopen(filename, "wb");
 
@@ -283,6 +283,9 @@ void bitstream_save_binary( BitstreamWriter *stream, const char *filename) {
 
         return;
     }
+
+    /* Grava o número de símbolos codificados como cabeçalho de 4 bytes */
+    fwrite(&symbol_count, sizeof(uint32_t), 1, f);
 
     size_t total_bytes = (stream->total_bits_written + 7) / 8;
 
@@ -380,9 +383,9 @@ void process_file(const char *filename) {
 
     output_filename[i] = '\0';
 
-    bitstream_save_binary( &bitstream, output_filename );
+    bitstream_save_binary( &bitstream, output_filename, (uint32_t)symbol_count );
 
-    printf("Arquivo salvo: %s\n",output_filename);
+    printf("Arquivo salvo: %s (%d simbolos)\n", output_filename, symbol_count);
 }
 
 /* 

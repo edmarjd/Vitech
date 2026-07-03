@@ -3,7 +3,7 @@ import time
 import os
 
 # Configuração global do tamanho do bloco
-BLOCK_SIZE = 64
+BLOCK_SIZE = 1000
 
 def C_rANS(s, state, symbol_counts):
     total_counts = np.sum(symbol_counts)  # Representa M
@@ -17,6 +17,7 @@ def scale_frequencies(c0, c1, M, B):
     Escalona as contagens de símbolos c0 e c1 de um bloco de tamanho B
     para frequências f0 e f1 que somem exatamente M, garantindo que f0, f1 >= 1.
     """
+    
     if c0 == 0:
         return [1, M - 1]
     if c1 == 0:

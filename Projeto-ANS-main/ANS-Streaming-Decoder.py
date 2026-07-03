@@ -1,5 +1,6 @@
 import numpy as np
 import os
+from collections import deque  # Bug fix: deque para pop O(1) em vez de list pop(0) O(n)
 
 def D_rANS(state, symbol_counts):
     """
@@ -27,7 +28,8 @@ def Streaming_rANS_decoder_block(final_state, block_bitstream_str, symbol_counts
     """
     total_counts = np.sum(symbol_counts)  # Representa M
     # Inverte o bitstream pois o rANS decodifica na ordem reversa da escrita (LIFO)
-    bitstream = list(map(int, block_bitstream_str[::-1]))
+    # Bug fix: usa deque para popleft() em O(1) em vez de list.pop(0) em O(n)
+    bitstream = deque(map(int, block_bitstream_str[::-1]))
 
     decoded_symbols = []
     state = final_state
@@ -38,7 +40,7 @@ def Streaming_rANS_decoder_block(final_state, block_bitstream_str, symbol_counts
 
         # Consome bits do stream para reconstruir o estado até que prev_state >= M
         while prev_state < total_counts and bitstream:
-            bit = bitstream.pop(0)
+            bit = bitstream.popleft()  # Bug fix: O(1) com deque
             prev_state = (prev_state << 1) | bit
 
         state = prev_state

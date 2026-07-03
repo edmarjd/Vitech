@@ -1,4 +1,13 @@
 import numpy as np
+import importlib, sys, os
+
+# Bug fix: carrega ANS-Encoder.py dinamicamente (hífen no nome impede import normal)
+_enc_path = os.path.join(os.path.dirname(__file__), "ANS-Encoder.py")
+_spec = importlib.util.spec_from_file_location("ANS_Encoder", _enc_path)
+_mod  = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+test_rANS_encoding = _mod.test_rANS_encoding
+
 
 def D_rANS(state, symbol_counts):
     total_counts = np.sum(symbol_counts)  # Represents M
@@ -16,10 +25,7 @@ def D_rANS(state, symbol_counts):
     return s, prev_state
 
 
-def test_D_rANS():
-    symbol_counts = [3, 3, 2]
-    initial_state = 17910
-    num_symbols = 9
+def test_D_rANS(initial_state, num_symbols, symbol_counts):
 
     state = initial_state
     print(f"{'Output':<10}{'State'}")
@@ -32,4 +38,13 @@ def test_D_rANS():
     print(f"\nFinal State: {state}")
 
 
-test_D_rANS()
+if __name__ == "__main__":
+    symbol_counts = [3, 3, 2]
+    input_symbols  = [0, 1, 0, 2, 2, 0, 2, 1, 2]
+
+    print("=== ENCODER ===")
+    final_state = test_rANS_encoding(symbol_counts, input_symbols)
+
+    print("\n=== DECODER ===")
+    # Bug fix: usa o estado dinâmico do encoder em vez de valor hardcoded
+    test_D_rANS(final_state, len(input_symbols), symbol_counts)

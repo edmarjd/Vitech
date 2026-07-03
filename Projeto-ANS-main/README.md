@@ -86,5 +86,15 @@ Projeto-ANS-main/
 ├── decoder
 └── README.md
 
-TESTE: 
-./venv/bin/python3 generate_test.py && mv teste_entropy.txt input.txt && ./venv/bin/python3 "ANS-Streaming Encoder.py"
+TESTE (pipeline completo com imagem real):
+1. Extrair planos de bits da imagem:
+   ./venv/bin/python3 Bit_Planes.py
+
+2. Selecionar um plano como entrada (ex: plano 7, maior entropia):
+   cp plano_bit_7.txt input.txt
+
+3. Codificar com ANS Streaming:
+   ./venv/bin/python3 "ANS-Streaming Encoder.py"
+
+4. Decodificar e verificar integridade:
+   ./venv/bin/python3 ANS-Streaming-Decoder.py

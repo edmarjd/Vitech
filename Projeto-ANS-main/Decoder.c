@@ -9,7 +9,8 @@
 #define RANGE 8
 #define CONFIG 6
 
-#define TOTAL_SYMBOLS 100
+/* Buffer estático para símbolos decodificados */
+#define MAX_DECODED_SYMBOLS 1000000
 
 #define EMPTY UINT8_MAX
 
@@ -113,7 +114,7 @@ typedef struct {
 
 static DecodeEntry g_rlt[RANGE];
 static uint8_t bitstream_buffer[BITSTREAM_CAPACITY];
-static int decoded_symbols[TOTAL_SYMBOLS];
+static int decoded_symbols[MAX_DECODED_SYMBOLS];
 
 /*
  BUILD RLT
@@ -145,6 +146,13 @@ void build_rlt() {
             g_rlt[next_idx].symbol = 1;
             g_rlt[next_idx].nbits = B_NBITS[prev_idx];
             g_rlt[next_idx].base_state = RANGE + prev_idx;
+        }
+    }
+
+    // Bug fix: valida que todos os slots da RLT foram preenchidos
+    for (int i = 0; i < RANGE; i++) {
+        if (g_rlt[i].symbol == -1) {
+            fprintf(stderr, "AVISO: RLT[%d] nao inicializada (CONFIG=%d). Tabelas inconsistentes.\n", i, CONFIG);
         }
     }
 }
@@ -225,6 +233,23 @@ void decode_file(const char *input_file, const char *output_file) {
         return;
     }
 
+    /* Lê cabeçalho: número de símbolos codificados (uint32_t, 4 bytes) */
+    uint32_t num_symbols = 0;
+    if (fread(&num_symbols, sizeof(uint32_t), 1, f) != 1) {
+        fprintf(stderr, "ERRO: não foi possível ler o cabeçalho de num_symbols.\n");
+        fclose(f);
+        return;
+    }
+
+    if (num_symbols == 0 || num_symbols > MAX_DECODED_SYMBOLS) {
+        fprintf(stderr, "ERRO: num_symbols inválido: %u\n", num_symbols);
+        fclose(f);
+        return;
+    }
+
+    printf("Símbolos a decodificar: %u\n", num_symbols);
+
+    /* Lê o restante (bitstream) depois do cabeçalho */
     size_t bytes_read = fread(bitstream_buffer, 1, BITSTREAM_CAPACITY, f);
     fclose(f);
 
@@ -251,22 +276,32 @@ void decode_file(const char *input_file, const char *output_file) {
 
     DBG_PRINTF("Offset extraido: %u | Estado inicial: %u\n", offset, context.state);
 
-    for (int i = TOTAL_SYMBOLS - 1; i >= 0; i--) {
+    int decode_ok = 1;
+    for (int i = (int)num_symbols - 1; i >= 0; i--) {
         decoded_symbols[i] = ans_decode_symbol(&context, &reader);
-        if (decoded_symbols[i] == -1) break;
+        if (decoded_symbols[i] == -1) {
+            fprintf(stderr, "ERRO: simbolo invalido na posicao %d — decodificacao abortada.\n", i);
+            decode_ok = 0;
+            break;  // Bug fix: para imediatamente, evita continuar com estado corrompido
+        }
+    }
+
+    if (!decode_ok) {
+        fprintf(stderr, "ERRO: arquivo nao pôde ser decodificado corretamente.\n");
+        return;
     }
 
     FILE *out = fopen(output_file, "w");
     if (!out) return;
-    for (int i = 0; i < TOTAL_SYMBOLS; i++) {
+    for (uint32_t i = 0; i < num_symbols; i++) {
         fprintf(out, "%d", decoded_symbols[i]);
-        if (i < TOTAL_SYMBOLS - 1) {
+        if (i < num_symbols - 1) {
             fprintf(out, " ");
         }
     }
     fclose(out);
 
-    printf("Arquivo decodificado: %s\n", output_file);
+    printf("Arquivo decodificado: %s (%u simbolos)\n", output_file, num_symbols);
 }
 
 int main(int argc, char *argv[]) {
