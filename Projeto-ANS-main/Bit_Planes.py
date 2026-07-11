@@ -18,12 +18,11 @@ def bit_plane_slicing(image_path):
 
         binary_matrix = (res > 0).astype(np.uint8)
 
-        if i in [5, 6, 7]:
-            planes_binary[i] = binary_matrix
+        planes_binary[i] = binary_matrix
 
         planes_visual.append(binary_matrix * 255)
 
-    for bit in [7, 6, 5]:
+    for bit in range(8):
         filename = f'plano_bit_{bit}.txt'
         # Flatten para garantir que salve como sequência contínua de 0s e 1s
         np.savetxt(filename, planes_binary[bit].flatten(), fmt='%d', delimiter='')

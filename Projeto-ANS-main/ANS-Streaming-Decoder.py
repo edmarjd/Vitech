@@ -1,134 +1,183 @@
-import numpy as np
+"""
+ANS-Streaming-Decoder.py  —  Versão 2.0 (Contextual, Estado Contínuo)
+----------------------------------------------------------------------
+Contraparte exata do encoder v2. Mudanças:
+
+Ponto 1 — Estado contínuo: lê estado final ÚNICO do stream, sem estado por bloco.
+Ponto 2/3 — Contexto de ordem 1 (lookahead): decoder mantém 'last_decoded'
+    que serve como contexto (= símbolo[i+1] na visão do símbolo i, já
+    decodificado na iteração anterior do loop reverso).
+Ponto 5 — Decoder simétrico: mesmo ContextModel, mesmo modo, mesma janela,
+    mesmas contagens adaptativas. Garante reconstrução bit-a-bit idêntica.
+
+Uso:
+    python ANS-Streaming-Decoder.py [--encoded input_encoded.bin]
+                                     [--output output.txt]
+                                     [--verify input.txt]
+"""
+
 import os
-from collections import deque  # Bug fix: deque para pop O(1) em vez de list pop(0) O(n)
+import argparse
+from collections import deque
 
-def D_rANS(state, symbol_counts):
+from context_model import ContextModel, NUM_CONTEXTS_1D
+
+
+# ---------------------------------------------------------------------------
+# rANS primitivos (decoder)
+# ---------------------------------------------------------------------------
+
+def _D_rANS(state: int, counts: list[int]) -> tuple[int, int]:
     """
-    Decodifica um único símbolo utilizando rANS e retorna o símbolo decodificado
-    e o estado anterior (não normalizado).
+    Decodifica um símbolo do estado rANS.
+    counts = [c0, c1]. Retorna (símbolo, estado_anterior_não_normalizado).
     """
-    total_counts = np.sum(symbol_counts)  # Representa M
-    cumul_counts = np.insert(np.cumsum(symbol_counts), 0, 0)  # Frequências acumuladas
-
-    def cumul_inverse(y):
-        for i, _s in enumerate(cumul_counts):
-            if y < _s:
-                return i - 1
-
-    slot = state % total_counts
-    s = cumul_inverse(slot)
-    prev_state = (state // total_counts) * symbol_counts[s] + slot - cumul_counts[s]
-    return s, prev_state
+    M  = counts[0] + counts[1]
+    cs = [0, counts[0]]      # frequências acumuladas: cs[0]=0, cs[1]=c0
+    slot = state % M
+    # Encontra o símbolo cujo intervalo cobre 'slot'
+    s = 1 if slot >= counts[0] else 0
+    prev = (state // M) * counts[s] + slot - cs[s]
+    return s, prev
 
 
-def Streaming_rANS_decoder_block(final_state, block_bitstream_str, symbol_counts, num_symbols_in_block):
+def decode_stream(bitstream_str: str, final_state: int, num_symbols: int,
+                  model: ContextModel) -> list[int]:
     """
-    Decodifica um único bloco codificado com rANS de fluxo.
-    Retorna a lista de símbolos decodificados para este bloco.
+    Decodifica o stream completo com estado rANS contínuo + contexto lookahead.
+
+    Loop reverso: processa símbolo[n-1] primeiro, ..., símbolo[0] por último.
+    Contexto = last_decoded (= símbolo[i+1] já decodificado no passo anterior).
     """
-    total_counts = np.sum(symbol_counts)  # Representa M
-    # Inverte o bitstream pois o rANS decodifica na ordem reversa da escrita (LIFO)
-    # Bug fix: usa deque para popleft() em O(1) em vez de list.pop(0) em O(n)
-    bitstream = deque(map(int, block_bitstream_str[::-1]))
+    # Inverte o bitstream: rANS decodifica consumindo bits da direita para
+    # a esquerda em relação à ordem de emissão do encoder.
+    bits = deque(map(int, bitstream_str[::-1]))
 
-    decoded_symbols = []
-    state = final_state
+    decoded = [0] * num_symbols
+    state   = final_state
+    last_decoded = 0   # contexto inicial para símbolo[n-1] = símbolo[n] = 0
 
-    for _ in range(num_symbols_in_block):
-        s_decoded, prev_state = D_rANS(state, symbol_counts)
-        decoded_symbols.append(s_decoded)
+    for i in range(num_symbols - 1, -1, -1):
+        ctx    = last_decoded
+        counts = model.get_counts(ctx)
 
-        # Consome bits do stream para reconstruir o estado até que prev_state >= M
-        while prev_state < total_counts and bitstream:
-            bit = bitstream.popleft()  # Bug fix: O(1) com deque
-            prev_state = (prev_state << 1) | bit
+        s, prev = _D_rANS(state, counts)
 
-        state = prev_state
+        # Normalização: consome bits até prev >= M
+        M = counts[0] + counts[1]
+        while prev < M and bits:
+            prev = (prev << 1) | bits.popleft()
 
-    # Como o rANS decodifica na ordem reversa, invertemos os símbolos decodificados para a ordem original
-    return decoded_symbols[::-1]
+        state = prev
+        decoded[i]   = s
+        last_decoded = s
 
+        # Avança janela do modelo (modo static) — deve espelhar exatamente o encoder
+        model.advance_window_decoder()
+
+    return decoded
+
+
+# ---------------------------------------------------------------------------
+# Leitura do arquivo comprimido
+# ---------------------------------------------------------------------------
+
+def load_encoded(path: str) -> dict:
+    """Lê o arquivo no formato do encoder v2 e retorna campos como dict."""
+    with open(path, "r") as f:
+        lines = f.readlines()
+    if len(lines) < 6:
+        raise ValueError(f"Arquivo '{path}' tem formato inválido (esperado ≥6 linhas).")
+    return {
+        "num_symbols":   int(lines[0].strip()),
+        "mode":          lines[1].strip(),
+        "recalc_window": int(lines[2].strip()),
+        "bitstream":     lines[3].strip(),
+        "final_state":   int(lines[4].strip()),
+        "headers_hex":   lines[5].strip(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
-    print("=========================================================================")
-    print("                    DECODIFICADOR ANS EM BLOCOS")
-    print("=========================================================================")
+    parser = argparse.ArgumentParser(description="ANS Streaming Decoder — Contextual v2")
+    parser.add_argument("--encoded", default="input_encoded.bin", help="Arquivo comprimido")
+    parser.add_argument("--output",  default="output.txt",        help="Arquivo de saída")
+    parser.add_argument("--verify",  default="",                  help="Arquivo original para verificação")
+    args = parser.parse_args()
 
-    # Carregar bitstream e metadados estruturados
-    if os.path.exists('input_encoded.bin'):
-        with open('input_encoded.bin', 'r') as f:
-            lines = f.readlines()
-            num_symbols = int(lines[0].strip())
-            block_size = int(lines[1].strip())
-            global_bitstream = lines[2].strip()
-            
-            final_states = [int(x) for x in lines[3].strip().split(',')]
-            bitstream_lengths = [int(x) for x in lines[4].strip().split(',')]
-            
-            symbol_counts_list = []
-            for pair_str in lines[5].strip().split(';'):
-                symbol_counts_list.append([int(x) for x in pair_str.split(',')])
-    else:
-        print("Erro: Arquivo 'input_encoded.bin' não encontrado. Abortando decodificação.")
+    if not os.path.exists(args.encoded):
+        print(f"Erro: '{args.encoded}' não encontrado.")
         return
 
-    print(f"Símbolos originais para decodificar: {num_symbols}")
-    print(f"Tamanho do bloco: {block_size}")
-    print(f"Quantidade total de blocos codificados: {len(final_states)}")
-    print(f"Tamanho do bitstream global: {len(global_bitstream)} bits")
+    print("=" * 72)
+    print("  ANS STREAMING DECODER v2")
+    print("=" * 72)
 
-    decoded_sequence = []
-    bit_idx = 0
+    data = load_encoded(args.encoded)
+    num_symbols   = data["num_symbols"]
+    mode          = data["mode"]
+    recalc_window = data["recalc_window"]
+    bitstream     = data["bitstream"]
+    final_state   = data["final_state"]
+    headers_hex   = data["headers_hex"]
 
-    print("\n" + "-"*65)
-    print(f"{'Bloco':<8}{'Tamanho':<10}{'Estado Final':<15}{'Comp. Bitstream':<18}{'Counts (f0,f1)':<15}")
-    print("-"*65)
+    print(f"Símbolos a decodificar : {num_symbols}")
+    print(f"Modo                   : {mode}")
+    print(f"Recalc window          : {recalc_window}")
+    print(f"Bits no bitstream      : {len(bitstream)}")
+    print(f"Estado final           : {final_state}")
 
-    for idx, (final_state, bit_len, symbol_counts) in enumerate(zip(final_states, bitstream_lengths, symbol_counts_list)):
-        # Extrai a porção específica do bitstream global correspondente a este bloco
-        block_bitstream = global_bitstream[bit_idx : bit_idx + bit_len]
-        bit_idx += bit_len
-        
-        # Cada bloco completo tem exatamente block_size símbolos (incluindo o padding)
-        num_symbols_in_block = block_size
-        
-        # Decodifica o bloco individualmente
-        decoded_block = Streaming_rANS_decoder_block(final_state, block_bitstream, symbol_counts, num_symbols_in_block)
-        decoded_sequence.extend(decoded_block)
-        
-        print(f"{idx+1:<8}{block_size:<10}{final_state:<15}{bit_len:<18}{str(symbol_counts):<15}")
-
-    print("-"*65)
-
-    # Remove os símbolos extras de preenchimento (padding) adicionados durante a codificação
-    decoded_sequence = decoded_sequence[:num_symbols]
-
-    # Salvar resultado decodificado em output.txt
-    with open('output.txt', 'w') as f:
-        f.write(' '.join(map(str, decoded_sequence)))
-
-    print(f"\nSequência decodificada salva em 'output.txt' ({len(decoded_sequence)} símbolos).")
-
-    # Verificação de integridade comparando com input.txt original
-    if os.path.exists('input.txt'):
-        with open('input.txt', 'r') as f:
-            content = f.read().replace('\n', ' ').split()
-            original_symbols = [int(x) for x in content if x in ['0', '1']]
-        
-        if decoded_sequence == original_symbols:
-            print("\n" + "="*65)
-            print("  SUCESSO: A sequência decodificada é 100% IDÊNTICA à original!")
-            print("="*65)
-        else:
-            print("\n" + "!"*65)
-            print("  ERRO: A sequência decodificada é DIFERENTE da original!")
-            print("!"*65)
-            # Exibir as diferenças se houver
-            diff_indices = [i for i, (x, y) in enumerate(zip(original_symbols, decoded_sequence)) if x != y]
-            print(f"Total de divergências: {len(diff_indices)} símbolos.")
-            print(f"Primeiras divergências nas posições: {diff_indices[:10]}")
+    # Reconstrói o modelo IDÊNTICO ao do encoder
+    model = ContextModel(mode=mode, num_contexts=NUM_CONTEXTS_1D,
+                         recalc_window=recalc_window)
+    if mode == "static":
+        model.load_static_headers(headers_hex)
     else:
-        print("\nAviso: 'input.txt' não encontrado para comparação de integridade.")
+        model.load_adaptive_header(headers_hex)
+
+    import time
+    t0 = time.time()
+    decoded = decode_stream(bitstream, final_state, num_symbols, model)
+    t1 = time.time()
+
+    # Salva resultado
+    with open(args.output, "w") as f:
+        f.write(" ".join(map(str, decoded)))
+
+    print(f"\nSequência decodificada salva em '{args.output}' ({len(decoded)} símbolos).")
+    print(f"Tempo de decodificação: {t1 - t0:.6f}s")
+
+    # Verificação de integridade
+    verify_path = args.verify
+    if not verify_path and os.path.exists("input.txt"):
+        verify_path = "input.txt"
+
+    if verify_path and os.path.exists(verify_path):
+        with open(verify_path, "r") as f:
+            content = f.read().replace(",", " ").replace("\n", " ").replace("\r", "")
+        tokens = content.split()
+        if all(len(t) == 1 for t in tokens if t):
+            original = [int(x) for x in tokens if x in ("0", "1")]
+        else:
+            original = [int(c) for c in content if c in ("0", "1")]
+
+        if decoded == original:
+            print("\n" + "=" * 72)
+            print("  ✓  SUCESSO: sequência decodificada é 100% IDÊNTICA à original!")
+            print("=" * 72)
+        else:
+            print("\n" + "!" * 72)
+            print("  ✗  ERRO: sequência decodificada DIVERGE da original!")
+            diffs = [i for i, (a, b) in enumerate(zip(original, decoded)) if a != b]
+            print(f"  Divergências: {len(diffs)} posições. Primeiras: {diffs[:10]}")
+            print("!" * 72)
+    else:
+        print("\nAviso: arquivo original não informado; verificação ignorada.")
+
 
 if __name__ == "__main__":
     main()

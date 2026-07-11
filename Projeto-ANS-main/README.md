@@ -81,20 +81,120 @@ Projeto-ANS-main/
 │
 ├── Encoder_Ans.c
 ├── Decoder.c
+├── ANS-Streaming Encoder.py
+├── ANS-Streaming-Decoder.py
+├── Bit_Planes.py
+├── inputs/
+│   ├── input_1.txt ... input_8.txt
+├── plano_bit_0.txt ... plano_bit_7.txt
 ├── input.txt
-├── encoder
-├── decoder
 └── README.md
+```
 
-TESTE (pipeline completo com imagem real):
-1. Extrair planos de bits da imagem:
-   ./venv/bin/python3 Bit_Planes.py
+---
 
-2. Selecionar um plano como entrada (ex: plano 7, maior entropia):
-   cp plano_bit_7.txt input.txt
+# Comandos de Teste Individuais
 
-3. Codificar com ANS Streaming:
-   ./venv/bin/python3 "ANS-Streaming Encoder.py"
+## Inputs `.txt` (pasta `inputs/`)
 
-4. Decodificar e verificar integridade:
-   ./venv/bin/python3 ANS-Streaming-Decoder.py
+### input_1.txt
+
+```bash
+cp inputs/input_1.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### input_2.txt
+
+```bash
+cp inputs/input_2.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### input_3.txt
+
+```bash
+cp inputs/input_3.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### input_4.txt
+
+```bash
+cp inputs/input_4.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### input_5.txt
+
+```bash
+cp inputs/input_5.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### input_6.txt
+
+```bash
+cp inputs/input_6.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### input_7.txt
+
+```bash
+cp inputs/input_7.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### input_8.txt
+
+```bash
+cp inputs/input_8.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+---
+
+## Bit Planes (gerados a partir de `foto.jpg`)
+
+> Pré-requisito: gerar todos os planos com `python3 Bit_Planes.py`
+
+### Plano 0 (LSB)
+
+```bash
+cp plano_bit_0.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### Plano 1
+
+```bash
+cp plano_bit_1.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### Plano 2
+
+```bash
+cp plano_bit_2.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### Plano 3
+
+```bash
+cp plano_bit_3.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### Plano 4
+
+```bash
+cp plano_bit_4.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### Plano 5
+
+```bash
+cp plano_bit_5.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### Plano 6
+
+```bash
+cp plano_bit_6.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
+
+### Plano 7 (MSB)
+
+```bash
+cp plano_bit_7.txt input.txt && python3 "ANS-Streaming Encoder.py" && python3 ANS-Streaming-Decoder.py
+```
