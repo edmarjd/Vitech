@@ -34,7 +34,7 @@ import time
 import os
 import argparse
 
-from context_model import ContextModel, NUM_CONTEXTS_1D
+from context_model import ContextModel, NUM_CONTEXTS_1D, NUM_CONTEXTS_2D
 
 # ---------------------------------------------------------------------------
 # rANS primitivos
@@ -66,32 +66,30 @@ def _encode_symbol(state: int, s: int, counts: list[int],
 # Encoder contextual — estado contínuo
 # ---------------------------------------------------------------------------
 
-def encode_stream(symbols: list[int], model: ContextModel) -> tuple[str, int]:
-    """
-    Codifica a sequência inteira com estado rANS contínuo + contexto de ordem 1.
-
-    Contexto lookahead: ctx do símbolo[i] = símbolo[i+1]  (0 se i == último).
-    Isso garante simetria com o decoder reverso (ver cabeçalho do arquivo).
-
-    Retorna (bitstream_str, final_state).
-    """
+def encode_stream(symbols: list[int], model: ContextModel,
+                  width: int = 0, recalc_window: int = 0) -> tuple[str, int]:
     n = len(symbols)
     if n == 0:
         return "", 0
 
-    # Estado inicial: usa contagens do contexto do primeiro símbolo (lookahead)
-    ctx0   = symbols[1] if n > 1 else 0
-    counts0 = model.get_counts(ctx0)
-    M0     = counts0[0] + counts0[1]
-    state  = M0  # estado inicial = M (limite inferior do intervalo válido)
+    def get_ctx(i: int) -> int:
+        if width <= 0:
+            return symbols[i + 1] if i + 1 < n else 0
+        col = i % width
+        rd  = symbols[i + 1]     if col < width - 1 and i + 1 < n     else 0
+        bd  = symbols[i + width] if i + width < n                      else 0
+        return rd * 2 + bd
 
+    ctx0    = get_ctx(0)
+    counts0 = model.get_counts(ctx0, 0)
+    state   = counts0[0] + counts0[1]
     bitstream: list[int] = []
 
     for i in range(n):
-        ctx     = symbols[i + 1] if i + 1 < n else 0
-        counts  = model.get_counts(ctx)
-        state   = _encode_symbol(state, symbols[i], counts, bitstream)
-        model.update_after_symbol(ctx, symbols[i])
+        ctx    = get_ctx(i)
+        blk    = i // recalc_window if recalc_window > 0 else None
+        counts = model.get_counts(ctx, blk)
+        state  = _encode_symbol(state, symbols[i], counts, bitstream)
 
     return "".join(map(str, bitstream)), state
 
@@ -114,15 +112,17 @@ def load_symbols(path: str) -> list[int]:
 # ---------------------------------------------------------------------------
 
 def save_encoded(path: str, num_symbols: int, mode: str, recalc_window: int,
-                 bitstream: str, final_state: int, headers_hex: str) -> None:
+                 bitstream: str, final_state: int, headers_hex: str,
+                 width: int = 0) -> None:
     """
-    Formato do arquivo comprimido (texto, uma campo por linha):
+    Formato do arquivo comprimido (texto, um campo por linha):
       Linha 0: num_symbols
       Linha 1: mode
       Linha 2: recalc_window
       Linha 3: bitstream (string de 0s e 1s)
       Linha 4: final_state
-      Linha 5: headers_hex (vazio se adaptive)
+      Linha 5: headers_hex
+      Linha 6: width  (0 = contexto 1D; >0 = contexto 2D com essa largura)
     """
     with open(path, "w") as f:
         f.write(f"{num_symbols}\n")
@@ -131,6 +131,7 @@ def save_encoded(path: str, num_symbols: int, mode: str, recalc_window: int,
         f.write(f"{bitstream}\n")
         f.write(f"{final_state}\n")
         f.write(f"{headers_hex}\n")
+        f.write(f"{width}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +142,11 @@ def main():
     parser = argparse.ArgumentParser(description="ANS Streaming Encoder — Contextual v2")
     parser.add_argument("--input",         default="input.txt",        help="Arquivo de entrada")
     parser.add_argument("--output",        default="input_encoded.bin", help="Arquivo de saída")
-    parser.add_argument("--mode",          default="static",           choices=["static", "adaptive"])
-    parser.add_argument("--recalc-window", type=int, default=1000,     help="Janela de recalibração (static)")
+    parser.add_argument("--mode",          default="static", choices=["static"])
+    parser.add_argument("--recalc-window", type=int, default=1000,     help="Janela de recalibração")
+    parser.add_argument("--width",         type=int, default=0,
+                        help="Largura da imagem em pixels (ativa contexto 2D espacial). "
+                             "Use 0 para sequências 1D (padrão).")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -161,26 +165,45 @@ def main():
     num_symbols_real = len(symbols)
     print(f"Símbolos lidos: {num_symbols_real}")
 
-    # Constrói o modelo de contexto
-    model = ContextModel(mode=args.mode, num_contexts=NUM_CONTEXTS_1D,
+    # Contexto: 1D (2 ctx) ou 2D espacial (4 ctx) dependendo de --width
+    n_ctx = NUM_CONTEXTS_2D if args.width > 0 else NUM_CONTEXTS_1D
+    ctx_label = f"2D espacial (width={args.width})" if args.width > 0 else "1D (lookahead-1)"
+    print(f"Contexto: {ctx_label}  |  {n_ctx} contextos")
+
+    # Pré-varredura por bloco
+    model = ContextModel(mode="static", num_contexts=n_ctx,
                          recalc_window=args.recalc_window)
 
+    n = len(symbols)
+    rw = args.recalc_window
+    n_blocks = (n + rw - 1) // rw
+
+    def get_ctx_prescan(i: int) -> int:
+        if args.width <= 0:
+            return symbols[i + 1] if i + 1 < n else 0
+        col = i % args.width
+        rd  = symbols[i + 1]         if col < args.width - 1 and i + 1 < n else 0
+        bd  = symbols[i + args.width] if i + args.width < n                 else 0
+        return rd * 2 + bd
+
+    block_freqs = []
+    for b in range(n_blocks):
+        counts = [[1, 1] for _ in range(n_ctx)]
+        start = b * rw
+        end   = min(start + rw, n)
+        for i in range(start, end):
+            ctx = get_ctx_prescan(i)
+            counts[ctx][symbols[i]] += 1
+        block_freqs.append(model._normalize(counts))
+    model.set_block_freqs(block_freqs)
+    print(f"Blocos: {n_blocks} (recalc_window={rw})")
+
     t0 = time.time()
-    # Modo static: priming com varredura prévia garante tabela útil mesmo
-    # quando o input é menor que RECALC_WINDOW (janela nunca dispara).
-    if args.mode == "static":
-        model.prime_static_from_scan(symbols)
-    elif args.mode == "adaptive":
-        model.set_global_frequencies(symbols)
-        print("Estatísticas globais por contexto calculadas (varredura prévia).")
-    bitstream, final_state = encode_stream(symbols, model)
+    bitstream, final_state = encode_stream(symbols, model, width=args.width,
+                                           recalc_window=rw)
     t1 = time.time()
 
-    # Serializa cabeçalhos
-    if args.mode == "static":
-        headers_hex = model.serialize_static_headers()
-    else:
-        headers_hex = model.serialize_adaptive_header()
+    headers_hex = model.serialize_static_headers()
 
     # Calcula métricas
     bits_bitstream   = len(bitstream)
@@ -217,7 +240,7 @@ def main():
     print("-" * 72)
 
     save_encoded(args.output, num_symbols_real, args.mode, args.recalc_window,
-                 bitstream, final_state, headers_hex)
+                 bitstream, final_state, headers_hex, width=args.width)
 
     print(f"\nArquivo salvo: '{args.output}'")
     print("=" * 72)

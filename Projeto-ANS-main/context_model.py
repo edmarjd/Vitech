@@ -1,28 +1,23 @@
 """
 context_model.py
 ----------------
-Modelo de contexto configurável de ordem 1 para compressão rANS binária.
+Modelo de contexto de ordem 1 para compressão rANS binária — modo static.
 
-Mudanças introduzidas neste módulo (ref. diagnóstico):
-- Ponto 2/3: implementa contexto de ordem 1 (bit anterior/próximo) nos modos
-  'static' (tabela fixa por janela RECALC_WINDOW, com cabeçalho compacto de
-  12 bits por contexto, igual ao FSE/zstd) e 'adaptive' (estatísticas globais
-  do input inteiro, zero overhead de cabeçalho extra por janela).
-- Ponto 1: estado ANS NÃO é controlado aqui; este módulo só gerencia
-  probabilidades. O controle de estado fica no encoder/decoder.
+Funcionamento:
+- Pré-varredura de todos os símbolos → tabela de frequências por contexto.
+- Tabela fixa durante toda a codificação (_no_recalc = True).
+- Overhead fixo: num_contexts × 12 bits de cabeçalho (transmitido uma vez).
 
-Contexto 1D  (para sequências INPUT_*): 2 contextos — prev=0 e prev=1.
-Contexto 2D  (para imagem, em spatial_predictor.py): 4 contextos —
+Contexto 1D (sequências INPUT_*): 2 contextos — prev=0 e prev=1.
+Contexto 2D (imagem): 4 contextos —
              (bit_esq, bit_acima) = 00, 01, 10, 11.
 
-Nota sobre compatibilidade com rANS de decodificação reversa
-------------------------------------------------------------
-O rANS padrão decodifica na ordem REVERSA dos símbolos. Para que o contexto
-seja causal e simétrico entre encoder e decoder, usamos "lookahead context":
-    contexto do símbolo i  =  símbolo[i+1]  (0 se i == último)
-No encoder (loop forward, i=0..n-1):  ctx = symbols[i+1] se i<n-1 else 0
-No decoder (loop reverso, i=n-1..0): ctx = último_decodificado  (= symbol[i+1])
-Isso garante que encoder e decoder usem EXATAMENTE a mesma tabela em cada passo.
+Compatibilidade com rANS de decodificação reversa
+--------------------------------------------------
+Usamos "lookahead context": contexto do símbolo i = símbolo[i+1].
+- Encoder (forward, i=0..n-1): ctx = symbols[i+1] se i<n-1 else 0
+- Decoder (reverso, i=n-1..0): ctx = último_decodificado (= symbol[i+1])
+Encoder e decoder usam exatamente a mesma tabela em cada passo.
 """
 
 # ---------------------------------------------------------------------------
@@ -32,8 +27,8 @@ Isso garante que encoder e decoder usem EXATAMENTE a mesma tabela em cada passo.
 NUM_CONTEXTS_1D = 2   # 0 e 1 (bit anterior/próximo)
 NUM_CONTEXTS_2D = 4   # 00, 01, 10, 11
 
-PRECISION_BITS = 12           # bits de precisão para normalização FSE/zstd
-PRECISION      = 1 << PRECISION_BITS  # 4096 — soma total das freqs normalizadas
+PRECISION_BITS = 12           # bits de precisão (padrão FSE/zstd)
+PRECISION      = 1 << PRECISION_BITS  # 4096
 
 
 # ---------------------------------------------------------------------------
@@ -46,130 +41,98 @@ class ContextModel:
 
     Parâmetros
     ----------
-    mode : 'static' | 'adaptive'
-        'static'   — tabela fixa por janela; recalculada a cada RECALC_WINDOW
-                     símbolos; cada nova tabela é transmitida como cabeçalho
-                     compacto (12 bits × num_contexts por janela).
-        'adaptive' — estatísticas globais do input calculadas em dois passos
-                     (encoder faz varredura prévia); decoder recebe o modelo
-                     como único cabeçalho no início do stream (24 bits para
-                     2 contextos), sem overhead por janela.
+    mode : 'static'
+        Pré-varredura de todos os símbolos → tabela fixa (_no_recalc=True).
+        Overhead: num_contexts × 12 bits de cabeçalho, transmitido uma vez.
     num_contexts : int
         2 para sequências 1D, 4 para imagens 2D.
     recalc_window : int
-        Tamanho da janela de recalibração (apenas mode='static').
+        Reservado (não usado com _no_recalc=True).
     """
 
     def __init__(self, mode: str = "static", num_contexts: int = NUM_CONTEXTS_1D,
                  recalc_window: int = 1000):
-        if mode not in ("static", "adaptive"):
-            raise ValueError(f"mode deve ser 'static' ou 'adaptive', recebeu '{mode}'")
+        if mode != "static":
+            raise ValueError("Único modo suportado: 'static'")
         self.mode          = mode
         self.num_contexts  = num_contexts
         self.recalc_window = recalc_window
-
-        # Prior de Laplace: c0=1, c1=1 por contexto
-        # Em adaptive: substituído pelas estatísticas globais antes de codificar
-        self._freq = [[1, 1] for _ in range(num_contexts)]
-
-        # Contagens da janela atual (modo static)
-        self._win_counts = [[1, 1] for _ in range(num_contexts)]
-
-        # Contador de símbolos (controla troca de janela no modo static)
-        self._sym_count = 0
-
-        # Lista de headers (modo static): cada item = lista de c0_norm por contexto
+        self._sym_count    = 0
         self._headers: list[list[int]] = []
+        self._win_counts   = [[1, 1] for _ in range(num_contexts)]
+        # Prior de Laplace inicial
+        self._freq         = [[1, 1] for _ in range(num_contexts)]
+        self._block_freqs  = []
 
     # ------------------------------------------------------------------
-    # API do encoder
+    # Inicialização da tabela (pré-varredura)
     # ------------------------------------------------------------------
-
-    def set_global_frequencies(self, symbols: list[int]) -> None:
-        """
-        (Modo adaptive) Calcula frequências globais por contexto a partir de
-        uma varredura completa dos símbolos (com lookahead context).
-        Deve ser chamado pelo encoder ANTES de iniciar a codificação.
-        """
-        counts = [[1, 1] for _ in range(self.num_contexts)]
-        n = len(symbols)
-        for i in range(n):
-            ctx = symbols[i + 1] if i + 1 < n else 0
-            counts[ctx][symbols[i]] += 1
-        # Normaliza para PRECISION
-        self._freq = self._normalize(counts)
 
     def prime_static_from_scan(self, symbols: list) -> None:
         """
-        (Modo static) Inicializa a tabela com varredura prévia de todos os
-        símbolos. Usa uma única tabela global para toda a codificação,
-        SEM recalibração intermediária.
-
-        Isso resolve a incompatibilidade de janelas com decodificação reversa:
-        o encoder trocaria de tabela na posição i (esquerda→direita), mas o
-        decoder reverso contaria da direita — as trocas nunca coincidiriam.
-        Com _no_recalc=True, apenas o header inicial é transmitido
-        (overhead fixo = num_contexts × 12 bits, independente do stream).
+        Pré-varredura de todos os símbolos (sequências 1D).
+        Usa lookahead context: ctx do símbolo i = symbol[i+1].
+        Define _no_recalc=True → tabela fixa para todo o stream.
         """
         counts = [[1, 1] for _ in range(self.num_contexts)]
         n = len(symbols)
         for i in range(n):
             ctx = symbols[i + 1] if i + 1 < n else 0
             counts[ctx][symbols[i]] += 1
-        self._freq = self._normalize(counts)
+        self._freq        = self._normalize(counts)
         self._init_header = [c[0] for c in self._freq]
-        self._no_recalc = True  # desativa recalibração intermediária
+        self._no_recalc   = True
 
     def prime_static_from_counts(self, bits: list, contexts: list) -> None:
         """
-        (Modo static, imagem) Inicializa com bits+contexts pré-calculados.
-        Equivalente a prime_static_from_scan mas aceita ctx separado.
+        Pré-varredura com bits+contexts pré-calculados (imagem 2D).
+        Define _no_recalc=True → tabela fixa para todo o stream.
         """
         counts = [[1, 1] for _ in range(self.num_contexts)]
         for b, ctx in zip(bits, contexts):
             counts[ctx][b] += 1
-        self._freq = self._normalize(counts)
+        self._freq        = self._normalize(counts)
         self._init_header = [c[0] for c in self._freq]
+        self._no_recalc   = True
+
+    def set_block_freqs(self, block_freqs: list) -> None:
+        """Define tabelas de frequência separadas por bloco."""
+        self._block_freqs = block_freqs
+        self._block_headers = [[c[0] for c in bf] for bf in block_freqs]
         self._no_recalc = True
+        if block_freqs:
+            self._freq = block_freqs[0]
 
+    # ------------------------------------------------------------------
+    # API do encoder / decoder
+    # ------------------------------------------------------------------
 
-    def get_counts(self, ctx: int) -> list[int]:
-        """Retorna [c0, c1] para uso direto no C_rANS / D_rANS."""
+    def get_counts(self, ctx: int, block_idx: int = None) -> list[int]:
+        """Retorna [c0, c1] para uso no C_rANS / D_rANS."""
+        if block_idx is not None and self._block_freqs:
+            idx = min(block_idx, len(self._block_freqs) - 1)
+            return self._block_freqs[idx][ctx]
         return self._freq[ctx]
 
     def update_after_symbol(self, ctx: int, sym: int) -> bool:
-        """
-        Atualiza o modelo após processar 'sym' no contexto 'ctx'.
-        Se _no_recalc=True (modo static com priming), ignora recalibração
-        intermediária — tabela permanece fixa durante todo o stream.
-        """
-        new_window = False
-        if self.mode == "static" and not getattr(self, "_no_recalc", False):
-            self._win_counts[ctx][sym] += 1
-            self._sym_count += 1
-            if self._sym_count % self.recalc_window == 0:
-                new_table = self._normalize(self._win_counts)
-                self._headers.append([c[0] for c in new_table])
-                self._freq = new_table
-                self._win_counts = [[1, 1] for _ in range(self.num_contexts)]
-                new_window = True
-        return new_window
+        """Sem recalibração intermediária (_no_recalc=True). Sempre retorna False."""
+        return False
+
+    def advance_window_decoder(self) -> None:
+        """Sem recalibração intermediária — tabela fixa. No-op."""
+        return
 
     # ------------------------------------------------------------------
     # Serialização (encoder → arquivo) e Deserialização (arquivo → decoder)
     # ------------------------------------------------------------------
 
     def serialize_static_headers(self) -> str:
-        """
-        Serializa todos os headers de janelas (modo static) como string hex.
-        O primeiro header é SEMPRE a tabela inicial (da varredura prévia ou
-        do prior). Demais headers = janelas subsequentes.
-        Cada header = num_contexts × 12 bits de c0_norm.
-        Overhead total: (1 + num_janelas_disparadas) × num_contexts × 12 bits.
-        """
-        # Inclui o header inicial como primeiro elemento
-        init = getattr(self, "_init_header", None)
-        all_headers = ([init] if init else []) + self._headers
+        """Serializa cabeçalho(s) como string hex (um por bloco)."""
+        if hasattr(self, '_block_headers') and self._block_headers:
+            all_headers = self._block_headers
+        else:
+            init = getattr(self, "_init_header", None)
+            all_headers = ([init] if init else []) + self._headers
         if not all_headers:
             return ""
         bits: list[int] = []
@@ -183,18 +146,15 @@ class ContextModel:
         return format(val, f"0{len(bits) // 4}x")
 
     def load_static_headers(self, hex_str: str) -> None:
-        """
-        Carrega headers serializados pelo encoder (modo static).
-        O PRIMEIRO header é aplicado imediatamente como tabela inicial.
-        Os demais são aplicados a cada RECALC_WINDOW símbolos.
-        """
+        """Carrega cabeçalho(s) e reconstrói tabelas por bloco."""
         if not hex_str:
             self._headers = []
+            self._block_freqs = []
             return
         n_bits = len(hex_str) * 4
-        val = int(hex_str, 16)
-        bits = [(val >> (n_bits - 1 - i)) & 1 for i in range(n_bits)]
-        bph = self.num_contexts * PRECISION_BITS  # bits per header
+        val    = int(hex_str, 16)
+        bits   = [(val >> (n_bits - 1 - i)) & 1 for i in range(n_bits)]
+        bph    = self.num_contexts * PRECISION_BITS
         self._headers = []
         pos = 0
         while pos + bph <= len(bits):
@@ -207,56 +167,28 @@ class ContextModel:
                 hdr.append(c0n)
             if any(v > 0 for v in hdr):
                 self._headers.append(hdr)
-        # Aplica imediatamente o primeiro header como tabela ativa
-        if self._headers:
-            self._apply_header(self._headers[0])
-        # Se só há 1 header, o encoder usou tabela única (prime mode) — decoder
-        # também deve usar tabela fixa sem avançar janelas.
-        if len(self._headers) == 1:
-            self._no_recalc = True
-
-    def serialize_adaptive_header(self) -> str:
-        """
-        (Modo adaptive) Serializa o modelo global como único cabeçalho hex.
-        = serialize_static_headers com um único header sintético.
-        """
-        hdr = [max(1, min(PRECISION - 1, self._freq[c][0]))
-               for c in range(self.num_contexts)]
-        self._headers = [hdr]
-        return self.serialize_static_headers()
-
-    def load_adaptive_header(self, hex_str: str) -> None:
-        """
-        (Modo adaptive) Carrega e aplica o modelo global do cabeçalho.
-        """
-        self.load_static_headers(hex_str)
-        if self._headers:
-            self._apply_header(self._headers[0])
-
-    def advance_window_decoder(self) -> None:
-        """
-        (Modo static) Chamado pelo decoder após cada símbolo.
-        Se _no_recalc=True, a tabela é fixa — não avança nada.
-        """
-        if self.mode != "static" or getattr(self, "_no_recalc", False):
-            return
-        self._sym_count += 1
-        if self._sym_count % self.recalc_window == 0:
-            next_idx = self._sym_count // self.recalc_window
-            if next_idx < len(self._headers):
-                self._apply_header_idx(next_idx)
+        # Reconstrói tabelas de frequência por bloco
+        self._block_freqs = []
+        for hdr in self._headers:
+            freq = []
+            for c0n in hdr:
+                c0n = max(1, min(PRECISION - 1, c0n))
+                freq.append([c0n, PRECISION - c0n])
+            self._block_freqs.append(freq)
+        if self._block_freqs:
+            self._freq = self._block_freqs[0]
+        self._no_recalc = True
 
     def header_overhead_bits(self) -> int:
-        """Total de bits de overhead dos cabeçalhos (para relatório)."""
-        if self.mode == "static":
-            if getattr(self, "_no_recalc", False):
-                # Apenas o header inicial único
-                return self.num_contexts * PRECISION_BITS
-            # +1 pelo header inicial + headers de janelas disparadas
-            n_init = 1 if getattr(self, "_init_header", None) else 0
-            return (n_init + len(self._headers)) * self.num_contexts * PRECISION_BITS
-        # adaptive: único header global
-        return self.num_contexts * PRECISION_BITS
+        """Bits de overhead (num_blocos × num_contexts × 12 bits)."""
+        n_blocks = max(1, len(self._block_freqs))
+        return n_blocks * self.num_contexts * PRECISION_BITS
+
+    def padding_bits(self) -> int:
+        """Bits de preenchimento adicionados para alinhar o cabeçalho a 8 bits."""
+        raw = self.header_overhead_bits()
+        remainder = raw % 8
+        return (8 - remainder) % 8
 
     # ------------------------------------------------------------------
     # Utilitários internos
@@ -267,8 +199,8 @@ class ContextModel:
         result = []
         for c0, c1 in counts:
             total = c0 + c1
-            c0n = round(c0 * PRECISION / total)
-            c0n = max(1, min(PRECISION - 1, c0n))
+            c0n   = round(c0 * PRECISION / total)
+            c0n   = max(1, min(PRECISION - 1, c0n))
             result.append([c0n, PRECISION - c0n])
         return result
 
@@ -277,7 +209,3 @@ class ContextModel:
         for c0n in hdr:
             c0n = max(1, min(PRECISION - 1, c0n))
             self._freq.append([c0n, PRECISION - c0n])
-
-    def _apply_header_idx(self, idx: int) -> None:
-        if 0 <= idx < len(self._headers):
-            self._apply_header(self._headers[idx])

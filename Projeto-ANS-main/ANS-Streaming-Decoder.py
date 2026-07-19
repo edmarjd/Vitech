@@ -20,7 +20,7 @@ import os
 import argparse
 from collections import deque
 
-from context_model import ContextModel, NUM_CONTEXTS_1D
+from context_model import ContextModel, NUM_CONTEXTS_1D, NUM_CONTEXTS_2D
 
 
 # ---------------------------------------------------------------------------
@@ -42,38 +42,32 @@ def _D_rANS(state: int, counts: list[int]) -> tuple[int, int]:
 
 
 def decode_stream(bitstream_str: str, final_state: int, num_symbols: int,
-                  model: ContextModel) -> list[int]:
-    """
-    Decodifica o stream completo com estado rANS contínuo + contexto lookahead.
-
-    Loop reverso: processa símbolo[n-1] primeiro, ..., símbolo[0] por último.
-    Contexto = last_decoded (= símbolo[i+1] já decodificado no passo anterior).
-    """
-    # Inverte o bitstream: rANS decodifica consumindo bits da direita para
-    # a esquerda em relação à ordem de emissão do encoder.
+                  model: ContextModel, width: int = 0,
+                  recalc_window: int = 0) -> list[int]:
     bits = deque(map(int, bitstream_str[::-1]))
-
-    decoded = [0] * num_symbols
-    state   = final_state
-    last_decoded = 0   # contexto inicial para símbolo[n-1] = símbolo[n] = 0
+    decoded      = [0] * num_symbols
+    state        = final_state
+    last_decoded = 0
 
     for i in range(num_symbols - 1, -1, -1):
-        ctx    = last_decoded
-        counts = model.get_counts(ctx)
+        if width <= 0:
+            ctx = last_decoded
+        else:
+            col = i % width
+            rd  = decoded[i + 1]     if col < width - 1 and i + 1 < num_symbols else 0
+            bd  = decoded[i + width] if i + width < num_symbols else 0
+            ctx = rd * 2 + bd
 
+        blk    = i // recalc_window if recalc_window > 0 else None
+        counts = model.get_counts(ctx, blk)
         s, prev = _D_rANS(state, counts)
-
-        # Normalização: consome bits até prev >= M
         M = counts[0] + counts[1]
         while prev < M and bits:
             prev = (prev << 1) | bits.popleft()
 
-        state = prev
+        state        = prev
         decoded[i]   = s
         last_decoded = s
-
-        # Avança janela do modelo (modo static) — deve espelhar exatamente o encoder
-        model.advance_window_decoder()
 
     return decoded
 
@@ -87,7 +81,7 @@ def load_encoded(path: str) -> dict:
     with open(path, "r") as f:
         lines = f.readlines()
     if len(lines) < 6:
-        raise ValueError(f"Arquivo '{path}' tem formato inválido (esperado ≥6 linhas).")
+        raise ValueError(f"Arquivo '{path}' tem formato inválido (≥ 6 linhas esperadas).")
     return {
         "num_symbols":   int(lines[0].strip()),
         "mode":          lines[1].strip(),
@@ -95,6 +89,7 @@ def load_encoded(path: str) -> dict:
         "bitstream":     lines[3].strip(),
         "final_state":   int(lines[4].strip()),
         "headers_hex":   lines[5].strip(),
+        "width":         int(lines[6].strip()) if len(lines) > 6 else 0,
     }
 
 
@@ -124,24 +119,27 @@ def main():
     bitstream     = data["bitstream"]
     final_state   = data["final_state"]
     headers_hex   = data["headers_hex"]
+    width         = data["width"]
+
+    n_ctx     = NUM_CONTEXTS_2D if width > 0 else NUM_CONTEXTS_1D
+    ctx_label = f"2D espacial (width={width})" if width > 0 else "1D (lookahead-1)"
 
     print(f"Símbolos a decodificar : {num_symbols}")
     print(f"Modo                   : {mode}")
+    print(f"Contexto               : {ctx_label}")
     print(f"Recalc window          : {recalc_window}")
     print(f"Bits no bitstream      : {len(bitstream)}")
     print(f"Estado final           : {final_state}")
 
-    # Reconstrói o modelo IDÊNTICO ao do encoder
-    model = ContextModel(mode=mode, num_contexts=NUM_CONTEXTS_1D,
+    model = ContextModel(mode=mode, num_contexts=n_ctx,
                          recalc_window=recalc_window)
-    if mode == "static":
-        model.load_static_headers(headers_hex)
-    else:
-        model.load_adaptive_header(headers_hex)
+    model.load_static_headers(headers_hex)
 
     import time
     t0 = time.time()
-    decoded = decode_stream(bitstream, final_state, num_symbols, model)
+    decoded = decode_stream(bitstream, final_state, num_symbols, model,
+                            width=width, recalc_window=recalc_window)
+
     t1 = time.time()
 
     # Salva resultado
