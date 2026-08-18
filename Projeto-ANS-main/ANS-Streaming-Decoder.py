@@ -1,26 +1,8 @@
-"""
-ANS-Streaming-Decoder.py  —  Versão 2.0 (Contextual, Estado Contínuo)
-----------------------------------------------------------------------
-Contraparte exata do encoder v2. Mudanças:
-
-Ponto 1 — Estado contínuo: lê estado final ÚNICO do stream, sem estado por bloco.
-Ponto 2/3 — Contexto de ordem 1 (lookahead): decoder mantém 'last_decoded'
-    que serve como contexto (= símbolo[i+1] na visão do símbolo i, já
-    decodificado na iteração anterior do loop reverso).
-Ponto 5 — Decoder simétrico: mesmo ContextModel, mesmo modo, mesma janela,
-    mesmas contagens adaptativas. Garante reconstrução bit-a-bit idêntica.
-
-Uso:
-    python ANS-Streaming-Decoder.py [--encoded input_encoded.bin]
-                                     [--output output.txt]
-                                     [--verify input.txt]
-"""
-
 import os
 import argparse
 from collections import deque
 
-from context_model import ContextModel, NUM_CONTEXTS_1D, NUM_CONTEXTS_2D
+from context_model import ContextModel, NUM_CONTEXTS_1D
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +24,7 @@ def _D_rANS(state: int, counts: list[int]) -> tuple[int, int]:
 
 
 def decode_stream(bitstream_str: str, final_state: int, num_symbols: int,
-                  model: ContextModel, width: int = 0,
+                  model: ContextModel,
                   recalc_window: int = 0) -> list[int]:
     bits = deque(map(int, bitstream_str[::-1]))
     decoded      = [0] * num_symbols
@@ -50,13 +32,7 @@ def decode_stream(bitstream_str: str, final_state: int, num_symbols: int,
     last_decoded = 0
 
     for i in range(num_symbols - 1, -1, -1):
-        if width <= 0:
-            ctx = last_decoded
-        else:
-            col = i % width
-            rd  = decoded[i + 1]     if col < width - 1 and i + 1 < num_symbols else 0
-            bd  = decoded[i + width] if i + width < num_symbols else 0
-            ctx = rd * 2 + bd
+        ctx = last_decoded
 
         blk    = i // recalc_window if recalc_window > 0 else None
         counts = model.get_counts(ctx, blk)
@@ -77,7 +53,7 @@ def decode_stream(bitstream_str: str, final_state: int, num_symbols: int,
 # ---------------------------------------------------------------------------
 
 def load_encoded(path: str) -> dict:
-    """Lê o arquivo no formato do encoder v2 e retorna campos como dict."""
+    """Lê o arquivo no formato do encoder e retorna campos como dict."""
     with open(path, "r") as f:
         lines = f.readlines()
     if len(lines) < 6:
@@ -89,7 +65,6 @@ def load_encoded(path: str) -> dict:
         "bitstream":     lines[3].strip(),
         "final_state":   int(lines[4].strip()),
         "headers_hex":   lines[5].strip(),
-        "width":         int(lines[6].strip()) if len(lines) > 6 else 0,
     }
 
 
@@ -98,7 +73,7 @@ def load_encoded(path: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="ANS Streaming Decoder — Contextual v2")
+    parser = argparse.ArgumentParser(description="ANS Streaming Decoder — Contextual")
     parser.add_argument("--encoded", default="input_encoded.bin", help="Arquivo comprimido")
     parser.add_argument("--output",  default="output.txt",        help="Arquivo de saída")
     parser.add_argument("--verify",  default="",                  help="Arquivo original para verificação")
@@ -109,7 +84,7 @@ def main():
         return
 
     print("=" * 72)
-    print("  ANS STREAMING DECODER v2")
+    print("  ANS STREAMING DECODER")
     print("=" * 72)
 
     data = load_encoded(args.encoded)
@@ -119,14 +94,12 @@ def main():
     bitstream     = data["bitstream"]
     final_state   = data["final_state"]
     headers_hex   = data["headers_hex"]
-    width         = data["width"]
 
-    n_ctx     = NUM_CONTEXTS_2D if width > 0 else NUM_CONTEXTS_1D
-    ctx_label = f"2D espacial (width={width})" if width > 0 else "1D (lookahead-1)"
+    n_ctx = NUM_CONTEXTS_1D
 
     print(f"Símbolos a decodificar : {num_symbols}")
     print(f"Modo                   : {mode}")
-    print(f"Contexto               : {ctx_label}")
+    print(f"Contexto               : 1D (lookahead-1)")
     print(f"Recalc window          : {recalc_window}")
     print(f"Bits no bitstream      : {len(bitstream)}")
     print(f"Estado final           : {final_state}")
@@ -138,7 +111,7 @@ def main():
     import time
     t0 = time.time()
     decoded = decode_stream(bitstream, final_state, num_symbols, model,
-                            width=width, recalc_window=recalc_window)
+                            recalc_window=recalc_window)
 
     t1 = time.time()
 

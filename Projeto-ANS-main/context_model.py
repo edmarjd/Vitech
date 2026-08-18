@@ -1,54 +1,12 @@
-"""
-context_model.py
-----------------
-Modelo de contexto de ordem 1 para compressão rANS binária — modo static.
-
-Funcionamento:
-- Pré-varredura de todos os símbolos → tabela de frequências por contexto.
-- Tabela fixa durante toda a codificação (_no_recalc = True).
-- Overhead fixo: num_contexts × 12 bits de cabeçalho (transmitido uma vez).
-
-Contexto 1D (sequências INPUT_*): 2 contextos — prev=0 e prev=1.
-Contexto 2D (imagem): 4 contextos —
-             (bit_esq, bit_acima) = 00, 01, 10, 11.
-
-Compatibilidade com rANS de decodificação reversa
---------------------------------------------------
-Usamos "lookahead context": contexto do símbolo i = símbolo[i+1].
-- Encoder (forward, i=0..n-1): ctx = symbols[i+1] se i<n-1 else 0
-- Decoder (reverso, i=n-1..0): ctx = último_decodificado (= symbol[i+1])
-Encoder e decoder usam exatamente a mesma tabela em cada passo.
-"""
-
-# ---------------------------------------------------------------------------
-# Constantes
-# ---------------------------------------------------------------------------
 
 NUM_CONTEXTS_1D = 2   # 0 e 1 (bit anterior/próximo)
-NUM_CONTEXTS_2D = 4   # 00, 01, 10, 11
 
 PRECISION_BITS = 12           # bits de precisão (padrão FSE/zstd)
 PRECISION      = 1 << PRECISION_BITS  # 4096
 
 
-# ---------------------------------------------------------------------------
-# Classe principal
-# ---------------------------------------------------------------------------
-
 class ContextModel:
-    """
-    Gerencia probabilidades condicionadas ao contexto para o rANS binário.
 
-    Parâmetros
-    ----------
-    mode : 'static'
-        Pré-varredura de todos os símbolos → tabela fixa (_no_recalc=True).
-        Overhead: num_contexts × 12 bits de cabeçalho, transmitido uma vez.
-    num_contexts : int
-        2 para sequências 1D, 4 para imagens 2D.
-    recalc_window : int
-        Reservado (não usado com _no_recalc=True).
-    """
 
     def __init__(self, mode: str = "static", num_contexts: int = NUM_CONTEXTS_1D,
                  recalc_window: int = 1000):
@@ -63,10 +21,6 @@ class ContextModel:
         # Prior de Laplace inicial
         self._freq         = [[1, 1] for _ in range(num_contexts)]
         self._block_freqs  = []
-
-    # ------------------------------------------------------------------
-    # Inicialização da tabela (pré-varredura)
-    # ------------------------------------------------------------------
 
     def prime_static_from_scan(self, symbols: list) -> None:
         """
@@ -83,17 +37,7 @@ class ContextModel:
         self._init_header = [c[0] for c in self._freq]
         self._no_recalc   = True
 
-    def prime_static_from_counts(self, bits: list, contexts: list) -> None:
-        """
-        Pré-varredura com bits+contexts pré-calculados (imagem 2D).
-        Define _no_recalc=True → tabela fixa para todo o stream.
-        """
-        counts = [[1, 1] for _ in range(self.num_contexts)]
-        for b, ctx in zip(bits, contexts):
-            counts[ctx][b] += 1
-        self._freq        = self._normalize(counts)
-        self._init_header = [c[0] for c in self._freq]
-        self._no_recalc   = True
+
 
     def set_block_freqs(self, block_freqs: list) -> None:
         """Define tabelas de frequência separadas por bloco."""
@@ -103,9 +47,6 @@ class ContextModel:
         if block_freqs:
             self._freq = block_freqs[0]
 
-    # ------------------------------------------------------------------
-    # API do encoder / decoder
-    # ------------------------------------------------------------------
 
     def get_counts(self, ctx: int, block_idx: int = None) -> list[int]:
         """Retorna [c0, c1] para uso no C_rANS / D_rANS."""
@@ -121,10 +62,6 @@ class ContextModel:
     def advance_window_decoder(self) -> None:
         """Sem recalibração intermediária — tabela fixa. No-op."""
         return
-
-    # ------------------------------------------------------------------
-    # Serialização (encoder → arquivo) e Deserialização (arquivo → decoder)
-    # ------------------------------------------------------------------
 
     def serialize_static_headers(self) -> str:
         """Serializa cabeçalho(s) como string hex (um por bloco)."""
@@ -177,6 +114,14 @@ class ContextModel:
             self._block_freqs.append(freq)
         if self._block_freqs:
             self._freq = self._block_freqs[0]
+        else:
+            # BUG8: cabeçalho corrompido ou vazio — avisa e mantém prior de Laplace
+            import warnings
+            warnings.warn(
+                "load_static_headers: nenhum bloco válido encontrado no cabeçalho hex. "
+                "Usando prior de Laplace [[1,1],[1,1]]. A decodificação pode estar errada.",
+                RuntimeWarning, stacklevel=2
+            )
         self._no_recalc = True
 
     def header_overhead_bits(self) -> int:
@@ -187,12 +132,12 @@ class ContextModel:
     def padding_bits(self) -> int:
         """Bits de preenchimento adicionados para alinhar o cabeçalho a 8 bits."""
         raw = self.header_overhead_bits()
+        # BUG12: se raw==0 (sem blocos), não há padding
+        if raw == 0:
+            return 0
         remainder = raw % 8
         return (8 - remainder) % 8
 
-    # ------------------------------------------------------------------
-    # Utilitários internos
-    # ------------------------------------------------------------------
 
     def _normalize(self, counts: list[list[int]]) -> list[list[int]]:
         """Normaliza contagens para soma = PRECISION; garante c0, c1 >= 1."""

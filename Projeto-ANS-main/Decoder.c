@@ -6,8 +6,13 @@
 #include <stdint.h>
 #include <string.h>
 
-#define RANGE 8
-#define CONFIG 6
+#ifndef RANGE
+    #define RANGE 8
+#endif
+
+#ifndef CONFIG
+    #define CONFIG 6
+#endif
 
 /* Buffer estático para símbolos decodificados */
 #define MAX_DECODED_SYMBOLS 1000000
@@ -20,11 +25,34 @@
  RANGE
  */
 
-#if RANGE == 8
+#if RANGE == 2
+    #define FLUSH_BITS 1
+    #define MAX_CONFIG 0
+    /* Configs válidos: 0 (fa=1,fb=1) */
+#elif RANGE == 4
+    #define FLUSH_BITS 2
+    #define MAX_CONFIG 2
+    /* Configs válidos: 0 (fa=3,fb=1), 1 (fa=1,fb=3), 2 (fa=2,fb=2) */
+#elif RANGE == 6
+    #define FLUSH_BITS 3
+    #define MAX_CONFIG 4
+    /* Configs INVALIDOS: 0 (fa=5,fb=1) e 1 (fa=1,fb=5) — nbits não uniforme */
+    #if CONFIG == 0 || CONFIG == 1
+        #error "RANGE=6: CONFIG 0 e 1 geram tabelas ambíguas. Use CONFIG 2,3 ou 4."
+    #endif
+#elif RANGE == 8
     #define FLUSH_BITS 3
     #define MAX_CONFIG 6
+    /* Configs INVALIDOS: 2 (fa=6,fb=2) e 4 (fa=5,fb=3) — nb=0 ambíguo */
+    #if CONFIG == 2 || CONFIG == 4
+        #error "RANGE=8: CONFIG 2 e 4 geram tabelas ambíguas. Use CONFIG 0,1,3,5 ou 6."
+    #endif
 #else
     #error RANGE invalido
+#endif
+
+#if CONFIG < 0 || CONFIG > MAX_CONFIG
+    #error CONFIG invalida
 #endif
 
 /*
@@ -40,7 +68,91 @@
 #endif
 
 /*
-TABELAS RANGE 8 (Sincronizadas com Encoder)
+ TABELAS RANGE 2 (Sincronizadas com Encoder)
+ */
+
+static const uint8_t a_range2[1][2] = {
+    {2,2}
+};
+
+static const uint8_t a_nbits_range2[1][2] = {
+    {1,1}
+};
+
+static const uint8_t b_range2[1][2] = {
+    {3,3}
+};
+
+static const uint8_t b_nbits_range2[1][2] = {
+    {1,1}
+};
+
+/*
+ TABELAS RANGE 4 (Sincronizadas com Encoder)
+ */
+
+static const uint8_t a_range4[3][4] = {
+    {5,6,4,4},
+    {4,4,4,4},
+    {4,4,5,5}
+};
+
+static const uint8_t a_nbits_range4[3][4] = {
+    {0,0,1,1},
+    {2,2,2,2},
+    {1,1,1,1}
+};
+
+static const uint8_t b_range4[3][4] = {
+    {7,7,7,7},
+    {6,7,5,5},
+    {6,6,7,7}
+};
+
+static const uint8_t b_nbits_range4[3][4] = {
+    {2,2,2,2},
+    {0,0,1,1},
+    {1,1,1,1}
+};
+
+/*
+ TABELAS RANGE 6 (Sincronizadas com Encoder)
+ */
+
+static const uint8_t a_range6[5][6] = {
+    {7,8,9,10,6,6},
+    {6,6,6,6,6,6},
+    {8,9,6,6,7,7},
+    {7,7,6,6,6,6},
+    {6,6,7,7,8,8}
+};
+
+static const uint8_t a_nbits_range6[5][6] = {
+    {0,0,0,0,1,1},
+    {2,2,3,3,3,3},
+    {0,0,1,1,1,1},
+    {1,1,2,2,2,2},
+    {1,1,1,1,1,1}
+};
+
+static const uint8_t b_range6[5][6] = {
+    {11,11,11,11,11,11},
+    {8,9,10,11,7,7},
+    {11,11,10,10,10,10},
+    {10,11,8,8,9,9},
+    {9,9,10,10,11,11}
+};
+
+static const uint8_t b_nbits_range6[5][6] = {
+    {2,2,3,3,3,3},
+    {0,0,0,0,1,1},
+    {1,1,2,2,2,2},
+    {0,0,1,1,1,1},
+    {1,1,1,1,1,1}
+};
+
+/*
+ TABELAS RANGE 8 (Sincronizadas com Encoder)
  */
 
 static const uint8_t a_range8[7][8] = {
@@ -76,17 +188,36 @@ static const uint8_t b_range8[7][8] = {
 static const uint8_t b_nbits_range8[7][8] = {
     {3,3,3,3,3,3,3,3},
     {0,0,0,0,0,0,1,1},
-    {0,0,0,0,1,1,1,1},
     {2,2,2,2,2,2,2,2},
-    {0,0,1,1,1,1,1,1},
+    {0,0,0,0,1,1,1,1},
     {1,1,1,1,2,2,2,2},
+    {0,0,1,1,1,1,1,1},
     {1,1,1,1,1,1,1,1}
 };
 
-#define A_TABLE  a_range8[CONFIG]
-#define A_NBITS a_nbits_range8[CONFIG]
-#define B_TABLE b_range8[CONFIG]
-#define B_NBITS b_nbits_range8[CONFIG]
+#if RANGE == 2
+    #define A_TABLE  a_range2[CONFIG]
+    #define A_NBITS  a_nbits_range2[CONFIG]
+    #define B_TABLE  b_range2[CONFIG]
+    #define B_NBITS  b_nbits_range2[CONFIG]
+#elif RANGE == 4
+    #define A_TABLE  a_range4[CONFIG]
+    #define A_NBITS  a_nbits_range4[CONFIG]
+    #define B_TABLE  b_range4[CONFIG]
+    #define B_NBITS  b_nbits_range4[CONFIG]
+#elif RANGE == 6
+    #define A_TABLE  a_range6[CONFIG]
+    #define A_NBITS  a_nbits_range6[CONFIG]
+    #define B_TABLE  b_range6[CONFIG]
+    #define B_NBITS  b_nbits_range6[CONFIG]
+#elif RANGE == 8
+    #define A_TABLE  a_range8[CONFIG]
+    #define A_NBITS  a_nbits_range8[CONFIG]
+    #define B_TABLE  b_range8[CONFIG]
+    #define B_NBITS  b_nbits_range8[CONFIG]
+#else
+    #error RANGE invalido
+#endif
 
 /*
  ESTRUTURAS
@@ -247,16 +378,24 @@ void decode_file(const char *input_file, const char *output_file) {
         return;
     }
 
-    printf("Símbolos a decodificar: %u\n", num_symbols);
-
     /* Lê o restante (bitstream) depois do cabeçalho */
     size_t bytes_read = fread(bitstream_buffer, 1, BITSTREAM_CAPACITY, f);
     fclose(f);
 
+    printf("Símbolos a decodificar: %u\n", num_symbols);
+
+    /* BUG3: verifica leitura vazia */
+    if (bytes_read == 0) {
+        fprintf(stderr, "ERRO: arquivo comprimido vazio ou corrompido.\n");
+        return;
+    }
+
     int total_bits = (int)bytes_read * 8;
 
-    // Padding removal
-    while (total_bits > FLUSH_BITS) {
+    /* Padding removal: remove zeros finais de alinhamento.
+     * O encoder escreve um stop bit '1' após os flush bits,
+     * portanto o loop para exatamente nesse '1'. */
+    while (total_bits > FLUSH_BITS + 1) {
         int bit_index = total_bits - 1;
         if ((bitstream_buffer[bit_index / 8] >> (7 - (bit_index % 8))) & 1) {
             break;
@@ -266,6 +405,10 @@ void decode_file(const char *input_file, const char *output_file) {
 
     BitstreamReader reader;
     bitstream_reader_init(&reader, bitstream_buffer, total_bits);
+
+    /* BUG2: o bit encontrado pelo padding removal é o stop bit '1'.
+     * Pulamos ele antes de ler os flush bits. */
+    reader.current_bit--;
 
     build_rlt();
 
@@ -292,7 +435,11 @@ void decode_file(const char *input_file, const char *output_file) {
     }
 
     FILE *out = fopen(output_file, "w");
-    if (!out) return;
+    /* BUG9: exibe mensagem de erro em vez de retornar silenciosamente */
+    if (!out) {
+        perror("fopen saida");
+        return;
+    }
     for (uint32_t i = 0; i < num_symbols; i++) {
         fprintf(out, "%d", decoded_symbols[i]);
         if (i < num_symbols - 1) {

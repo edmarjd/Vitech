@@ -10,7 +10,7 @@ import time
 import argparse
 from collections import deque
 
-from context_model import ContextModel, NUM_CONTEXTS_1D, NUM_CONTEXTS_2D
+from context_model import ContextModel, NUM_CONTEXTS_1D
 
 # ---------------------------------------------------------------------------
 # rANS primitivos
@@ -57,21 +57,16 @@ def load_symbols(path):
 # Pipeline completo para um arquivo
 # ---------------------------------------------------------------------------
 
-def run_one(path, recalc_window, width=0):
+def run_one(path, recalc_window):
     symbols = load_symbols(path)
     n = len(symbols)
-    n_ctx = NUM_CONTEXTS_2D if width > 0 else NUM_CONTEXTS_1D
+    n_ctx = NUM_CONTEXTS_1D
     rw = recalc_window
     n_blocks = (n + rw - 1) // rw
 
-    # Função de contexto
+    # Função de contexto 1D (lookahead)
     def get_ctx(i):
-        if width <= 0:
-            return symbols[i + 1] if i + 1 < n else 0
-        col = i % width
-        rd = symbols[i + 1]     if col < width - 1 and i + 1 < n else 0
-        bd = symbols[i + width] if i + width < n                  else 0
-        return rd * 2 + bd
+        return symbols[i + 1] if i + 1 < n else 0
 
     # Pré-varredura por bloco
     model_enc = ContextModel(mode="static", num_contexts=n_ctx,
@@ -117,13 +112,7 @@ def run_one(path, recalc_window, width=0):
 
     t0 = time.time()
     for i in range(n - 1, -1, -1):
-        if width <= 0:
-            ctx = last_decoded
-        else:
-            col = i % width
-            rd = decoded[i + 1]     if col < width - 1 and i + 1 < n else 0
-            bd = decoded[i + width] if i + width < n                  else 0
-            ctx = rd * 2 + bd
+        ctx = last_decoded
         blk = i // rw if rw > 0 else None
         c = model_dec.get_counts(ctx, blk)
         s, prev = _D_rANS(state, c)
@@ -193,7 +182,7 @@ def main():
         if not os.path.exists(path):
             print(f"  input_{i}.txt não encontrado, pulando.")
             continue
-        r = run_one(path, rw, width=0)
+        r = run_one(path, rw)
         ok = "✓" if r["decode_ok"] else "✗"
         print(f"{rw:>8} | {'INPUT_'+str(i):<12} | {r['n']:>10} | {r['n_blocks']:>6} | "
               f"{r['bits_hdr']:>10} | {r['bits_pad']:>8} | {r['bits_state']:>8} | {r['bits_bs']:>10} | {r['bits_total']:>11} | "
@@ -208,10 +197,9 @@ def main():
               f"{g_hdr:>10} | {g_pad:>8} | {g_state:>8} | {g_bs:>10} | {g_total:>11} | "
               f"{g_taxa:>7.2f}% | {'':>8} | {'':>8} |")
 
-    # --- PLANOS DE BITS 2D ---
-    IMG_WIDTH = 320  # largura da imagem (320×320)
+    # --- PLANOS DE BITS (contexto 1D) ---
     print(f"\n{'─' * W}")
-    print(f"  RESULTADO DOS TESTES — PLANOS DE BITS (contexto 2D, width={IMG_WIDTH}, recalc_window={rw})")
+    print(f"  RESULTADO DOS TESTES — PLANOS DE BITS (contexto 1D, recalc_window={rw})")
     print(f"{'─' * W}")
     print(f"{'BLOCO':>8} | {'ARQUIVO':<12} | {'ORIGINAL':>10} | {'BLOCOS':>6} | "
           f"{'OVERHEAD':>10} | {'PADDING':>8} | {'ESTADO':>8} | {'BITSTREAM':>10} | {'COMPRIMIDO':>11} | "
@@ -225,7 +213,7 @@ def main():
         if not os.path.exists(path):
             print(f"  plano_bit_{p}.txt não encontrado, pulando.")
             continue
-        r = run_one(path, rw, width=IMG_WIDTH)
+        r = run_one(path, rw)
         ok = "✓" if r["decode_ok"] else "✗"
         print(f"{rw:>8} | {'PLANO_'+str(p):<12} | {r['n']:>10} | {r['n_blocks']:>6} | "
               f"{r['bits_hdr']:>10} | {r['bits_pad']:>8} | {r['bits_state']:>8} | {r['bits_bs']:>10} | {r['bits_total']:>11} | "

@@ -1,6 +1,6 @@
 # Projeto ANS (Asymmetric Numeral Systems) - Streaming Contextual e C Estático
 
-Este projeto foca na implementação e experimentação com técnicas de compressão baseadas em **Asymmetric Numeral Systems (ANS)**, abrangendo tanto implementações em C baseadas em tabelas (tANS estático) quanto pipelines modernos em Python baseados em streaming rANS com estado contínuo e modelos de contexto (1D e 2D espacial).
+Este projeto foca na implementação e experimentação com técnicas de compressão baseadas em **Asymmetric Numeral Systems (ANS)**, abrangendo tanto implementações em C baseadas em tabelas (tANS estático) quanto pipelines modernos em Python baseados em streaming rANS com estado contínuo e modelo de contexto 1D (lookahead).
 
 O ANS é uma técnica moderna de codificação entrópica que substitui o clássico Huffman em algoritmos de alta performance como Zstandard, JPEG XL e compressores de jogos, por possuir a velocidade de Huffman aliada à eficiência teórica da Codificação Aritmética.
 
@@ -52,19 +52,23 @@ Esse script vai processar a imagem, salvar um gráfico combinando os bits (`resu
 
 Se você quer executar o streaming contextual em um arquivo `txt` individual.
 
+> **Atenção:** execute os comandos de dentro da pasta do projeto:
+> ```bash
+> cd ~/Documentos/Vitech/Projeto-ANS-main
+> ```
+
 **Codificar (Contexto 1D Padrão):**
 
 ```bash
-python3 "ANS-Streaming Encoder.py" --input entradas_binarias.txt --output comprimido.bin --mode static --recalc-window 1000
+python3 "ANS-Streaming Encoder.py" --input input.txt --output comprimido.bin --mode static --recalc-window 1000
 ```
 
 **Decodificar (Contexto 1D):**
 
 ```bash
-python3 ANS-Streaming-Decoder.py --encoded comprimido.bin --output saida.txt --verify entradas_binarias.txt
+python3 ANS-Streaming-Decoder.py --encoded comprimido.bin --output saida.txt --verify input.txt
 ```
 
-_(Nota: caso o arquivo .txt a ser codificado seja na verdade uma imagem e você saiba a largura dele, por exemplo, o plano de bit gerado, adicione a flag `--width <LARGURA>` ao encoder para que ele ative automaticamente o modelo de **contexto espacial 2D** otimizado)._
 
 ### 3. tANS Estático (Implementação C)
 
@@ -95,7 +99,7 @@ Esses executáveis gerarão `input_encoded.bin` e a respectiva saída, mantendo 
 ```text
 Projeto-ANS-main/
 │
-├── ANS-Streaming Encoder.py  # Codificador principal Python (rANS + Estado Contínuo + Contexto 1D/2D)
+├── ANS-Streaming Encoder.py  # Codificador principal Python (rANS + Estado Contínuo + Contexto 1D)
 ├── ANS-Streaming-Decoder.py  # Decodificador Python (reverso simétrico exato)
 ├── context_model.py          # Implementação de modelagem de contexto e estado de lookahead
 ├── Bit_Planes.py             # Script de análise e recorte de planos de bit de imagens
@@ -110,4 +114,4 @@ Projeto-ANS-main/
 Diferente da versão primária em C ou das primitivas anteriores, os scripts Python (`ANS-Streaming Encoder.py` e `Decoder.py`) aplicam o estado da arte com:
 
 - **Estado Contínuo**: Em vez de fazer reflush de estado por blocos curtos e gastar performance gravando padding, o ANS carrega um macro-estado continuamente e despacha bits excedentes instantaneamente, gerando Overhead próximo de zero;
-- **Contexto _Lookahead_ / Espacial**: Foi introduzida predição contextual via cadeias de Markov onde a probabilidade de um bit é modulada com base nos vizinhos diretos (no caso do 2D, pegamos as predições superior e a predição da esquerda). No decoder (por ser operado em passo reverso - LIFO), o próximo símbolo espacial já está perfeitamente acessível, tornando-o ultraeficiente e eliminando cabeçalhos de predição embutidos.
+- **Contexto _Lookahead_**: Foi introduzida predição contextual via cadeias de Markov onde a probabilidade de um bit é modulada com base no próximo símbolo (lookahead-1). No decoder (por ser operado em passo reverso - LIFO), o próximo símbolo já está perfeitamente acessível, tornando-o ultraeficiente e eliminando cabeçalhos de predição embutidos.
